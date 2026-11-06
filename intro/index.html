@@ -1,0 +1,840 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta name="robots" content="noindex,nofollow">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>黑茶马戏团 · 粒子</title>
+<style>
+  :root { --bg: #07040d; --accent: #ffd58a; --ink: rgba(255, 244, 228, .92); --dim: rgba(255, 244, 228, .52); }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--ink);
+    font-family: -apple-system, "PingFang SC", "Helvetica Neue", sans-serif;
+    user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
+  html.embed { color-scheme: light; }   /* 和外层 iframe 一致，否则浏览器铺不透明底色，幕布露不出来 */
+  html.see-through, html.see-through body { background: transparent; }
+  canvas, .brand, .hud { transition: opacity 1.1s ease; }
+  /* 入场券：点击后粒子票换成真票，往下塞进票口 */
+  #tkClip { position: fixed; inset: 0; pointer-events: none; display: none; perspective: 900px; }
+  #tkImg { position: absolute; left: 0; top: 0; opacity: 0; transition: opacity .35s ease; filter: drop-shadow(0 18px 40px rgba(0, 0, 0, .55)); }
+  #tkSlot { position: fixed; width: 2px; border-radius: 1px; pointer-events: none; display: none; opacity: 0;
+    background: linear-gradient(transparent, #fff1d6 18%, #fff1d6 82%, transparent); box-shadow: 0 0 18px 4px rgba(255, 200, 130, .55);
+    transition: opacity .45s ease; }
+  /* 网站开场版：只有入场券（可带烟花），不显示标题和幕名 */
+  html.intro .brand, html.intro .hud { display: none; }
+  html.embed .lil-gui.root { display: none; }
+  canvas { display: block; touch-action: none; cursor: crosshair; }
+  .brand { position: fixed; left: 24px; top: 20px; pointer-events: none; user-select: none; }
+  .brand b { display: block; font: 600 15px/1.2 "Songti SC", "STSong", serif; letter-spacing: .32em; }
+  .brand i { display: block; margin-top: 7px; font: italic 11px/1 Didot, "Bodoni 72", serif; letter-spacing: .28em; color: var(--dim); }
+  .brand::after { content: ""; display: block; width: 46px; height: 1px; margin-top: 10px; background: var(--accent); opacity: .8; }
+  .hud { position: fixed; left: 24px; bottom: 22px; pointer-events: none; user-select: none; }
+  .dots { display: flex; gap: 8px; margin-bottom: 12px; }
+  .dots span { width: 6px; height: 6px; border-radius: 50%; border: 1px solid var(--dim); transition: all .5s; }
+  .dots span.on { background: var(--accent); border-color: var(--accent); box-shadow: 0 0 10px var(--accent); }
+  .stage-name { font: 500 22px/1.2 "Songti SC", "STSong", serif; letter-spacing: .12em; transition: opacity .35s; }
+  .nogl { position: fixed; inset: 0; display: grid; place-items: center; font-size: 15px; color: var(--dim); }
+  /* 右上角面板：深色半透明，跟着主题换强调色 */
+  .lil-gui.root { --background-color: rgba(12, 8, 18, .74); --title-background-color: rgba(30, 16, 34, .9);
+    --widget-color: rgba(255, 255, 255, .08); --hover-color: rgba(255, 255, 255, .14); --focus-color: rgba(255, 255, 255, .2);
+    --number-color: var(--accent); --string-color: var(--accent); --font-family: -apple-system, "PingFang SC", sans-serif;
+    --font-size: 12px; --input-font-size: 12px; --name-width: 42%; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 213, 138, .18); border-radius: 6px; overflow: hidden; }
+  @media (max-width: 600px) {
+    .brand { left: 16px; top: 58px; } .hud { left: 16px; bottom: 16px; } .stage-name { font-size: 18px; }
+  }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "./vendor/three.module.min.js",
+  "three/addons/": "./vendor/addons/"
+} }
+</script>
+</head>
+<body>
+<div class="brand"><b>黑茶马戏团</b><i>BLACK TEA CIRCUS</i></div>
+<div class="hud">
+  <div class="dots" id="dots"></div>
+  <div class="stage-name" id="name">第一幕 · 红茶螺旋</div>
+</div>
+<div id="tkClip"><img id="tkImg" alt="" draggable="false"></div>
+<div id="tkSlot"></div>
+<script src="ticket.js"></script>
+
+<script type="module">
+import * as THREE from 'three';
+import { GPUComputationRenderer } from 'three/addons/misc/GPUComputationRenderer.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import GUI from 'three/addons/libs/lil-gui.module.min.js';
+
+// ---------- 基本设置 ----------
+// 嵌进网站时，手机（触屏）算力有限：模拟纹理缩到 320×320（约 10 万粒子），像素比上限 1.5
+const COARSE = new URLSearchParams(location.search).has('embed') && matchMedia('(pointer: coarse)').matches;
+const SIZE = COARSE ? 320 : 512;  // 模拟纹理 512×512，最多 262144 个粒子
+const MAX = SIZE * SIZE;
+const CW = 1400, CH = 900;        // 画形状用的离屏画布
+const S = 11 / CW;                // 画布像素 → 世界单位
+const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
+
+// ?embed=1：接在网站前面当开场，票塞进去后通知外层网页拉开幕布
+const QS = new URLSearchParams(location.search), EMBED = QS.has('embed');
+// ?intro=ticket：开场直接拼入场券；?intro=fw：先放烟花，几秒后（或点一下）收成入场券。不带 = 五幕完整版
+const INTRO = QS.get('intro');
+if (INTRO) document.documentElement.classList.add('intro');
+if (EMBED) document.documentElement.classList.add('embed');
+// 告诉外层网页：hc-intro-ready 第一帧画出来了；hc-intro-fail 跑不起来或太卡，外层退回普通幕布；hc-intro-done 票塞进去了
+const tell = type => { if (EMBED && parent !== window) parent.postMessage({ type }, '*'); };
+addEventListener('error', () => tell('hc-intro-fail'));
+
+const NIGHT = ['#ff2f8e', '#7b4dff', '#ffd58a'], MONO = ['#4e4e52', '#a9a9ad', '#ffffff'], TEA = ['#c21d2f', '#ff7a3d', '#fff0d0'];
+const TICKET = ['#7a1424', '#c0384a', '#f6e6c8'];   // 入场券：卡面酒红 → 奶油色印
+const CUP = ['#c8401c', '#f0a060', '#ffffff'], TENT = ['#ff3344', '#fff0d8', '#ffc84a'];
+const THEMES = {   // pal：茶杯、帐篷、第三幕文字、烟花、入场券各三色；rainbow = 烟花每发换一种鲜艳颜色
+  '原色': { bg: '#070405', rainbow: 0, pal: [CUP, TENT, TEA, TEA, TICKET] },
+  '彩色烟花': { bg: '#070405', rainbow: 1, pal: [CUP, TENT, TEA, TEA, TICKET] },
+  '夜场': { bg: '#07040d', rainbow: 0, pal: [NIGHT, NIGHT, NIGHT, NIGHT, TICKET] },
+  '黑白': { bg: '#050505', rainbow: 0, pal: [MONO, MONO, MONO, MONO, MONO] },
+};
+// 第三幕文字的配色（字从左到右走这三种颜色）；“跟主题”= 用上面主题里的第三组
+const WORD_PALS = {
+  '票面奶油': ['#e9cfa6', '#fff1dc', '#ffffff'],
+  '香槟金': ['#b8862e', '#f2cf7a', '#fff6dc'],
+  '酒红奶油': ['#b0233a', '#f0b9a0', '#fff2e2'],
+  '马戏红金': ['#e0233c', '#ff9a3c', '#ffd76a'],
+  '玫瑰': ['#e83a6e', '#ff9ab8', '#fff0f4'],
+  '冷月': ['#6f9bff', '#c4d8ff', '#ffffff'],
+  '跟主题': null,
+};
+// 第三幕的文字和排版。改台词只改这里
+const WORD_LAYOUTS = {
+  '大字两行': [{ text: '欢迎来到', font: '700 150px "Songti SC", "STSong", serif', ls: 40, y: -105, g: [0, 1] },
+               { text: '黑茶马戏团', font: '900 205px "Songti SC", "STSong", serif', ls: 26, y: 105, g: [0, 1] }],
+  '一行大字': [{ text: '欢迎来到黑茶马戏团', font: '900 128px "Songti SC", "STSong", serif', ls: 10, y: 0, g: [0, 1] }],
+  'HELLO+欢迎语': [{ text: 'HELLO', font: '900 290px Rockwell, "Avenir Next", Impact, sans-serif', ls: 10, y: -60, g: [0, 1] },
+                   { text: '欢迎来到黑茶马戏团', font: '700 84px "Songti SC", "STSong", serif', ls: 14, y: 175, g: [0.94, 0.94], rule: 96 }],
+};
+
+const params = {
+  count: COARSE ? MAX : 200000, size: 1.8, bright: COARSE ? 0.2 : 0.12,
+  noise: 1.0, noiseScale: 0.35, morphDur: 2.9, spring: 7,
+  mouseMode: '放大', mouseStr: 0.3, mouseRad: 1.9,
+  theme: '原色', words: '大字两行', wordPal: '票面奶油', bloom: 0.55, bloomRad: 0.45, ca: 0.0035,
+  fps: 0, stage: '',
+  next: () => advance(), home: () => goTo(0),
+};
+
+const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
+if (!renderer.capabilities.isWebGL2) {
+  document.body.insertAdjacentHTML('beforeend', '<div class="nogl">这个浏览器不支持 WebGL2，换 Chrome / Safari 新版再打开。</div>');
+  tell('hc-intro-fail');
+  throw new Error('no webgl2');
+}
+renderer.setPixelRatio(Math.min(devicePixelRatio, COARSE ? 1.5 : 2));
+renderer.setSize(innerWidth, innerHeight);
+document.body.prepend(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 100);
+let camDist = 12;
+
+// ---------- 用 2D 画布画形状，采样成粒子目标点 ----------
+// 颜色编码：R = 色调(0 洋红 → 0.5 紫 → 1 金)，G = 255 表示“会旋转的螺旋”
+const col = (t, spin = 0, dens = 0) => `rgb(${Math.round(t * 255)},${spin ? 255 : 0},${dens})`;
+
+function sampleShape(draw, depth = 0.9, seg = 0) {
+  const c = document.createElement('canvas'); c.width = CW; c.height = CH;
+  const ctx = c.getContext('2d', { willReadFrequently: true });
+  ctx.translate(CW / 2, CH / 2); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  draw(ctx);
+  const img = ctx.getImageData(0, 0, CW, CH).data;
+  // 模糊后的透明度 ≈ 离边缘多远，用来给形状“鼓”出厚度
+  const b = document.createElement('canvas'); b.width = CW; b.height = CH;
+  const bctx = b.getContext('2d', { willReadFrequently: true });
+  bctx.filter = 'blur(18px)'; bctx.drawImage(c, 0, 0);
+  const blur = bctx.getImageData(0, 0, CW, CH).data;
+  const cand = [];
+  for (let i = 0; i < CW * CH; i++) {
+    const d = img[i * 4 + 2];
+    if (img[i * 4 + 3] > 140 && (d === 0 || Math.random() * 255 < d)) cand.push(i);
+  }
+  const out = new Float32Array(MAX * 4);
+  for (let k = 0; k < MAX; k++) {
+    const i = cand[(Math.random() * cand.length) | 0];
+    const px = i % CW, py = (i / CW) | 0;
+    const th = blur[i * 4 + 3] / 255;
+    let tone = (seg + img[i * 4] / 255 * 0.999) / 5;   // 5 段：茶杯、帐篷、第三幕文字、烟花、入场券
+    if (img[i * 4 + 1] > 128) tone = -(tone + 0.01);
+    out[k * 4] = (px + Math.random() - CW / 2) * S;
+    out[k * 4 + 1] = -(py + Math.random() - CH / 2) * S;
+    out[k * 4 + 2] = (Math.random() + Math.random() - 1) * depth * th;
+    out[k * 4 + 3] = tone;
+  }
+  return out;
+}
+
+// 第一幕：催眠红茶头像的螺旋茶杯（也是开场的“螺旋星系”）。螺线白、茶汤红茶色、杯身奶白、热气淡
+const CUP_S = 7.8, CUP_DY = 15.5;
+const teacup = sampleShape(ctx => {
+  ctx.scale(CUP_S, CUP_S); ctx.translate(0, CUP_DY);
+  ctx.save(); ctx.translate(0, -7); ctx.fillStyle = col(0.62);
+  ctx.fill(new Path2D('M-3-11C-10-21-1-29-6-41C-9-49-5-56-2-63C-4-55-1-49 1-42C5-30-3-22 1-11Z'));
+  ctx.fill(new Path2D('M6-12C0-20 9-27 5-37C3-43 6-48 9-53C8-47 10-42 11-37C14-27 6-21 9-12Z'));
+  ctx.restore();
+  ctx.fillStyle = col(0.06, 1, 150); ctx.beginPath(); ctx.ellipse(0, -4, 28.5, 10, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = col(0.9); ctx.lineWidth = 1.6;
+  ctx.beginPath(); ctx.ellipse(0, -4, 30, 11, 0, 0, Math.PI * 2); ctx.stroke();
+  ctx.strokeStyle = col(1, 1); ctx.lineWidth = 1.9; ctx.beginPath();
+  const turns = Math.PI * 2 * 3.2;
+  for (let a = 0; a <= turns; a += 0.02) { const r = a / turns; ctx.lineTo(Math.cos(a) * 26 * r, -4 + Math.sin(a) * 9.2 * r); }
+  ctx.stroke();
+  ctx.strokeStyle = col(0.9); ctx.lineWidth = 2.4;
+  ctx.stroke(new Path2D('M-30-4C-30 18-17 30 0 30C17 30 30 18 30-4'));
+  ctx.stroke(new Path2D('M29 4C42 0 45 15 27 19'));
+  ctx.lineWidth = 1.9; ctx.stroke(new Path2D('M-17 35Q0 39 17 35'));
+}, 0.6, 0);
+const SPIN = new THREE.Vector4(0, -(-4 + CUP_DY) * CUP_S * S, 26 * CUP_S * S, 9.2 * CUP_S * S);
+
+// 第二幕：马戏帐篷（条纹顶、金色垂边、门洞、顶上的旗和沿屋檐的灯泡）
+const tent = sampleShape(ctx => {
+  ctx.translate(0, 40);
+  const A = 0.02, B = 0.5, G = 0.98;
+  const roof = new Path2D('M 0 -300 Q -130 -150 -400 -60 L 400 -60 Q 130 -150 0 -300 Z');
+  ctx.save(); ctx.clip(roof);
+  const n = 12;
+  for (let k = 0; k < n; k++) {
+    const x0 = -400 + k * 800 / n; ctx.fillStyle = col(k % 2 ? B : A);
+    ctx.beginPath(); ctx.moveTo(0, -300); ctx.lineTo(x0, -60); ctx.lineTo(x0 + 800 / n + 1, -60); ctx.closePath(); ctx.fill();
+  }
+  ctx.restore();
+  ctx.fillStyle = col(G); ctx.fillRect(-400, -66, 800, 14);
+  for (let k = 0; k < 16; k++) { ctx.beginPath(); ctx.arc(-375 + k * 50, -52, 25, 0, Math.PI); ctx.fill(); }
+  const wd = new Path2D(); wd.rect(-340, -27, 680, 247);
+  wd.addPath(new Path2D('M -95 220 L -95 70 Q 0 -5 95 70 L 95 220 Z'));
+  ctx.save(); ctx.clip(wd, 'evenodd');
+  for (let k = 0; k < 14; k++) { ctx.fillStyle = col(k % 2 ? A : B); ctx.fillRect(-340 + k * 680 / 14, -30, 680 / 14 + 1, 260); }
+  ctx.restore();
+  ctx.strokeStyle = col(G); ctx.lineWidth = 7;
+  ctx.beginPath(); ctx.moveTo(-95, 220); ctx.lineTo(-95, 70); ctx.quadraticCurveTo(0, -5, 95, 70); ctx.lineTo(95, 220); ctx.stroke();
+  ctx.lineWidth = 6; ctx.beginPath(); ctx.moveTo(0, -300); ctx.lineTo(0, -400); ctx.stroke();
+  ctx.fillStyle = col(A);
+  ctx.beginPath(); ctx.moveTo(0, -400); ctx.quadraticCurveTo(60, -415, 130, -385); ctx.quadraticCurveTo(60, -372, 0, -350); ctx.fill();
+  ctx.fillStyle = col(G);
+  for (const s of [-1, 1]) for (let k = 1; k < 10; k++) {
+    const t = k / 10, u = 1 - t;   // 沿屋檐二次曲线放灯泡
+    const x = s * (2 * u * t * 130 + t * t * 400), y = u * u * -300 + 2 * u * t * -150 + t * t * -60;
+    ctx.beginPath(); ctx.arc(x, y - 8, 8, 0, 7); ctx.fill();
+  }
+  ctx.fillRect(-440, 226, 880, 6);
+}, 0.8, 1);
+
+// 第三幕：迎宾文字（台词和排版在 WORD_LAYOUTS），字从左到右走一条渐变色
+const drawWords = layout => ctx => {
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (const L of WORD_LAYOUTS[layout]) {
+    ctx.font = L.font; ctx.letterSpacing = L.ls + 'px';
+    const g = ctx.createLinearGradient(-560, 0, 560, 0);
+    g.addColorStop(0, col(L.g[0] * 0.97 + 0.03)); g.addColorStop(1, col(L.g[1] * 0.97 + 0.03));
+    ctx.fillStyle = g; ctx.fillText(L.text, L.ls / 2, L.y);
+    if (L.rule) {   // 字上方的细线 + 菱形
+      ctx.fillRect(-300, L.rule - 1.5, 230, 3); ctx.fillRect(70, L.rule - 1.5, 230, 3);
+      ctx.save(); ctx.translate(0, L.rule); ctx.rotate(Math.PI / 4); ctx.fillRect(-9, -9, 18, 18); ctx.restore();
+    }
+  }
+};
+let hello = sampleShape(drawWords(params.words), 0.25, 2);
+
+// 终幕：入场券（10-26 定稿 A3·薇）。奶油色印满密度，酒红卡面稀疏铺一层，粒子拼出整张票
+const tkImg = await new Promise(res => { const im = new Image(); im.onload = () => res(im); im.onerror = () => res(null); im.src = window.TICKET_SRC || ''; });
+const TK_H = 800, TK_W = tkImg ? TK_H * tkImg.naturalWidth / tkImg.naturalHeight : 354, TK_DY = 8;
+const ticket = sampleShape(ctx => {
+  if (!tkImg) { ctx.fillStyle = col(0.9); ctx.fillRect(-TK_W / 2, -TK_H / 2, TK_W, TK_H); return; }
+  const c = document.createElement('canvas'); c.width = Math.round(TK_W); c.height = TK_H;
+  const x = c.getContext('2d', { willReadFrequently: true }); x.drawImage(tkImg, 0, 0, c.width, c.height);
+  const d = x.getImageData(0, 0, c.width, c.height), p = d.data;
+  for (let i = 0; i < p.length; i += 4) {
+    if (p[i + 3] < 140) { p[i + 3] = 0; continue; }
+    const ink = Math.min(1, Math.max(0, ((p[i] + p[i + 1] + p[i + 2]) / 3 - 90) / 110));   // 0 卡面 → 1 奶油色印
+    p[i] = Math.round((0.1 + 0.89 * ink) * 255); p[i + 1] = 0; p[i + 2] = ink > 0.45 ? 0 : 70; p[i + 3] = 255;
+  }
+  x.putImageData(d, 0, 0);
+  ctx.imageSmoothingEnabled = false; ctx.drawImage(c, -TK_W / 2, -TK_H / 2 + TK_DY);
+}, 0.12, 4);
+
+// 星系：两条对数螺旋臂 + 金色核心 + 外圈尘埃。存 (半径, 初始角, 厚度, 色调)，着色器里转动
+const gauss = () => { let u = 0; for (let i = 0; i < 4; i++) u += Math.random(); return (u - 2) * 1.73; };
+const galaxy = new Float32Array(MAX * 4);
+for (let k = 0; k < MAX; k++) {
+  const u = Math.random(); let r, th, y, tone;
+  if (u < 0.06) {
+    r = Math.abs(gauss()) * 0.55; th = Math.random() * Math.PI * 2; y = gauss() * 0.25 * Math.max(0, 1 - r / 1.6); tone = 0.84 + Math.random() * 0.16;
+  } else if (u < 0.88) {
+    r = Math.min(6.5, 0.4 - Math.log(1 - Math.random() * 0.985) * 1.35);
+    th = Math.floor(Math.random() * 2) * Math.PI + Math.log(r) * 2.6 + gauss() * (0.16 + 0.035 * r);
+    y = gauss() * 0.07 * (1 + r * 0.12); tone = Math.min(0.72, Math.max(0, 0.66 - r * 0.1 + gauss() * 0.07));
+  } else {
+    r = Math.sqrt(Math.random()) * 7.2; th = Math.random() * Math.PI * 2; y = gauss() * 0.3; tone = Math.random() * 0.55;
+  }
+  galaxy.set([r, th, y, tone], k * 4);
+}
+
+// 烟花：按第三幕文字里每个粒子的横坐标分成 6 发，第一轮从字的位置炸开，之后从地面升空循环
+const SHELLS = 6;
+const fw = new Float32Array(MAX * 4);
+const shellC0 = Array.from({ length: SHELLS }, () => new THREE.Vector3());
+function buildFireworks() {
+  const shellN = new Array(SHELLS).fill(0);
+  shellC0.forEach(c => c.set(0, 0, 0));
+  let xmin = Infinity, xmax = -Infinity;
+  for (let k = 0; k < MAX; k++) { const x = hello[k * 4]; if (x < xmin) xmin = x; if (x > xmax) xmax = x; }
+  // 每发烟花由 240 条放射线组成：粒子挑一条线，沿线前后错开，长度越短（越靠尾巴）越暗
+  const strands = Array.from({ length: SHELLS }, (_, s) => {
+    const n = new THREE.Vector3(Math.random() - .5, Math.random() - .5, Math.random() - .5).normalize();
+    return Array.from({ length: 240 }, () => {
+      const d = new THREE.Vector3(gauss(), gauss(), gauss()).normalize();
+      if (s % 3 === 2) d.addScaledVector(n, -d.dot(n)).normalize();   // 每三发有一发是圆环
+      return d;
+    });
+  });
+  for (let k = 0; k < MAX; k++) {
+    const s = Math.min(SHELLS - 1, Math.floor((hello[k * 4] - xmin) / (xmax - xmin + 1e-6) * SHELLS));
+    shellC0[s].x += hello[k * 4]; shellC0[s].y += hello[k * 4 + 1]; shellN[s]++;
+    const d = strands[s][(Math.random() * 240) | 0];
+    const len = 1 - Math.pow(Math.random(), 1.6) * 0.45;
+    fw.set([s, (d.x + gauss() * 0.01) * len, (d.y + gauss() * 0.01) * len, (d.z + gauss() * 0.01) * len], k * 4);
+  }
+  shellC0.forEach((c, i) => c.divideScalar(Math.max(1, shellN[i])));
+}
+buildFireworks();
+
+const dataTex = arr => { const t = new THREE.DataTexture(arr, SIZE, SIZE, THREE.RGBAFormat, THREE.FloatType); t.needsUpdate = true; return t; };
+const TEX = { teacup: dataTex(teacup), tent: dataTex(tent), hello: dataTex(hello), galaxy: dataTex(galaxy), fw: dataTex(fw), ticket: dataTex(ticket) };
+// 换第三幕排版：重新采样文字，烟花的分组也跟着重算
+function rebuildWords() {
+  hello = sampleShape(drawWords(params.words), 0.25, 2);
+  TEX.hello.image.data.set(hello); TEX.hello.needsUpdate = true;
+  buildFireworks(); TEX.fw.image.data.set(fw); TEX.fw.needsUpdate = true;
+}
+
+// ---------- GPU 模拟：速度 + 位置两张纹理 ----------
+const NOISE = /* glsl */`
+vec3 mod289(vec3 x){return x-floor(x*(1.0/289.0))*289.0;}
+vec4 mod289(vec4 x){return x-floor(x*(1.0/289.0))*289.0;}
+vec4 permute(vec4 x){return mod289(((x*34.0)+10.0)*x);}
+vec4 taylorInvSqrt(vec4 r){return 1.79284291400159-0.85373472095314*r;}
+// 带梯度的 3D simplex 噪声（Ashima / stegu webgl-noise）
+float snoise(vec3 v, out vec3 gradient){
+  const vec2 C=vec2(1.0/6.0,1.0/3.0); const vec4 D=vec4(0.0,0.5,1.0,2.0);
+  vec3 i=floor(v+dot(v,C.yyy)); vec3 x0=v-i+dot(i,C.xxx);
+  vec3 g=step(x0.yzx,x0.xyz); vec3 l=1.0-g; vec3 i1=min(g.xyz,l.zxy); vec3 i2=max(g.xyz,l.zxy);
+  vec3 x1=x0-i1+C.xxx; vec3 x2=x0-i2+C.yyy; vec3 x3=x0-D.yyy;
+  i=mod289(i);
+  vec4 p=permute(permute(permute(i.z+vec4(0.0,i1.z,i2.z,1.0))+i.y+vec4(0.0,i1.y,i2.y,1.0))+i.x+vec4(0.0,i1.x,i2.x,1.0));
+  float n_=0.142857142857; vec3 ns=n_*D.wyz-D.xzx;
+  vec4 j=p-49.0*floor(p*ns.z*ns.z); vec4 x_=floor(j*ns.z); vec4 y_=floor(j-7.0*x_);
+  vec4 x=x_*ns.x+ns.yyyy; vec4 y=y_*ns.x+ns.yyyy; vec4 h=1.0-abs(x)-abs(y);
+  vec4 b0=vec4(x.xy,y.xy); vec4 b1=vec4(x.zw,y.zw);
+  vec4 s0=floor(b0)*2.0+1.0; vec4 s1=floor(b1)*2.0+1.0; vec4 sh=-step(h,vec4(0.0));
+  vec4 a0=b0.xzyw+s0.xzyw*sh.xxyy; vec4 a1=b1.xzyw+s1.xzyw*sh.zzww;
+  vec3 p0=vec3(a0.xy,h.x); vec3 p1=vec3(a0.zw,h.y); vec3 p2=vec3(a1.xy,h.z); vec3 p3=vec3(a1.zw,h.w);
+  vec4 norm=taylorInvSqrt(vec4(dot(p0,p0),dot(p1,p1),dot(p2,p2),dot(p3,p3)));
+  p0*=norm.x; p1*=norm.y; p2*=norm.z; p3*=norm.w;
+  vec4 m=max(0.5-vec4(dot(x0,x0),dot(x1,x1),dot(x2,x2),dot(x3,x3)),0.0);
+  vec4 m2=m*m; vec4 m4=m2*m2;
+  vec4 pdotx=vec4(dot(p0,x0),dot(p1,x1),dot(p2,x2),dot(p3,x3));
+  vec4 temp=m2*m*pdotx;
+  gradient=-8.0*(temp.x*x0+temp.y*x1+temp.z*x2+temp.w*x3);
+  gradient+=m4.x*p0+m4.y*p1+m4.z*p2+m4.w*p3; gradient*=105.0;
+  return 105.0*dot(m4,pdotx);
+}
+// 无散度的“卷曲”流场：两个噪声梯度的叉积（bitangent noise）
+vec3 curl(vec3 p){ vec3 g1,g2; snoise(p,g1); snoise(p+vec3(31.416,-47.853,12.679),g2); return cross(g1,g2); }
+vec3 flowField(vec3 p, float time){
+  vec3 k1 = vec3(1.3, 2.1, -.7), k2 = vec3(-1.8, .6, 1.7), k3 = vec3(.5, -1.4, 2.3);
+  vec3 v = cross(k1, vec3(.3, .7, .2)) * cos(dot(p, k1) + time * .47);
+  v += cross(k2, vec3(.8, -.2, .4)) * cos(dot(p, k2) - time * .39 + 2.0);
+  v += cross(k3, vec3(-.4, .3, .9)) * cos(dot(p, k3) + time * .31 + 4.0);
+  p *= 1.93;
+  v += .28 * cross(k1, vec3(-.2, .5, .8)) * cos(dot(p, k1) - time * .7 + 1.0);
+  v += .28 * cross(k2, vec3(.4, .8, -.3)) * cos(dot(p, k2) + time * .6 + 3.0);
+  v += .28 * cross(k3, vec3(.6, -.2, .5)) * cos(dot(p, k3) - time * .5 + 5.0);
+  return v * .24;
+}
+float hash12(vec2 p){ vec3 p3=fract(vec3(p.xyx)*.1031); p3+=dot(p3,p3.yzx+33.33); return fract((p3.x+p3.y)*p3.z); }
+vec3 hash31(float p){ vec3 p3=fract(vec3(p)*vec3(.1031,.1030,.0973)); p3+=dot(p3,p3.yzx+33.33); return fract((p3.xxy+p3.yzz)*p3.zyx); }
+`;
+
+const velShader = /* glsl */`
+uniform float uTime, uDelta, uMorph, uNoise, uNoiseScale, uSpring, uFwTime, uTilt, uFwHide;
+uniform float uMouseStr, uMouseRad, uMouseOn, uMouseSign, uBurst;
+uniform vec3 uMouse, uCamDir, uBurstC;
+uniform vec4 uSpin;
+uniform int uPrevKind, uNextKind;
+uniform float uPrevWave, uNextWave;
+uniform sampler2D uPrevTex, uNextTex, uGalaxy, uFw, uHello;
+uniform vec3 uShellC0[${SHELLS}];
+#define PI 3.14159265
+${NOISE}
+
+vec4 galaxyT(vec2 uv, float seed, out float b){
+  vec4 g = texture2D(uGalaxy, uv);
+  float a = g.y + uTime * 0.16;
+  vec3 p = vec3(cos(a) * g.x, g.z, sin(a) * g.x);
+  float ct = cos(uTilt), st = sin(uTilt);
+  p = vec3(p.x, p.y * ct - p.z * st, p.y * st + p.z * ct);
+  b = clamp(0.32 + 0.68 * exp(-g.x * 0.42), 0.0, 1.0) * (0.78 + 0.22 * sin(uTime * 2.0 + seed * 60.0));
+  return vec4(p, g.w);
+}
+
+vec4 shapeT(sampler2D tex, float wave, vec2 uv, float seed, out float b){
+  vec4 s = texture2D(tex, uv);
+  vec3 p = s.xyz; float tone = s.w;
+  if (tone < 0.0) {            // 茶杯里的螺旋：在椭圆坐标里转，看起来一直往里卷
+    tone = -tone - 0.01;
+    vec2 q = (p.xy - uSpin.xy) / uSpin.zw;
+    float a = -uTime * 1.4, c = cos(a), sn = sin(a);
+    q = vec2(c * q.x - sn * q.y, sn * q.x + c * q.y);
+    p.xy = uSpin.xy + q * uSpin.zw;
+  }
+  float boost = s.w < 0.0 && fract(tone * 5.0) > 0.5 ? 1.2 : 1.0;
+  if (wave > 0.5) {            // 鲸鱼：尾巴摆、身体上下浮
+    p.y += sin(p.x * 0.9 - uTime * 1.8) * 0.2 * smoothstep(-2.0, 4.5, p.x) + sin(uTime * 0.7) * 0.15;
+    p.z += sin(p.x * 0.5 - uTime * 1.2) * 0.12;
+  }
+  b = (0.86 + 0.14 * sin(uTime * 3.0 + seed * 50.0)) * boost;
+  return vec4(p, tone);
+}
+
+vec4 fireworkT(vec2 uv, float seed, out float b){
+  vec4 f = texture2D(uFw, uv);
+  int s = int(f.x + 0.5); float fs = f.x;
+  vec3 dir = f.yzw;
+  vec4 h0 = texture2D(uHello, uv);
+  float lt = uFwTime - (0.12 + fs * 0.3);
+  if (lt < 0.0) {              // 还没轮到这一发：留在字上；开场版不显示字，先藏在这一发的中心
+    if (uFwHide > 0.5) { b = 0.0; return vec4(uShellC0[s], 3.5 / 5.0); }
+    b = 0.9; return h0;
+  }
+  const float P = 3.6, RISE = 0.75, LIFE = 2.5;
+  float c = floor(lt / P), tau = lt - c * P;
+  vec3 hc = hash31(fs * 17.13 + c * 3.71 + 1.0);
+  float tone = (3.0 + 0.999 * fract(hc.x * 1.7 + fs * 0.37 + (seed > 0.72 ? 0.33 : 0.0))) / 5.0;
+  vec3 center;
+  if (c < 0.5) center = uShellC0[s];
+  else {
+    center = vec3((hc.x - 0.5) * 9.0, 0.6 + hc.y * 2.8, (hc.z - 0.5) * 2.5);
+    if (tau < RISE) {          // 升空：一条细长的火箭尾巴
+      float k = tau / RISE, e = 1.0 - (1.0 - k) * (1.0 - k);
+      vec3 head = mix(vec3(center.x * 0.8, -6.5, center.z), center, e);
+      b = (seed < 0.02 ? 1.6 : 0.05) * (0.5 + 0.5 * k);
+      return vec4(head - vec3(0.0, seed * 0.9 * (1.0 - k) + seed * 0.12, 0.0) + dir * 0.02, 3.12 / 5.0);
+    }
+    tau -= RISE;
+  }
+  if (tau > LIFE) {            // 熄灭后藏到下一发的发射点
+    vec3 hn = hash31(fs * 17.13 + (c + 1.0) * 3.71 + 1.0);
+    b = 0.0; return vec4((hn.x - 0.5) * 9.0 * 0.8, -6.5, (hn.z - 0.5) * 2.5, tone);
+  }
+  float sp = 3.0 + hc.y;
+  vec3 p = center + dir * sp * (1.0 - exp(-2.4 * tau)) + vec3(0.0, -0.42 * tau * tau, 0.0);
+  b = 2.4 * pow(1.0 - tau / LIFE, 1.3) * (0.65 + 0.35 * sin(seed * 91.0 + uFwTime * 28.0)) * (1.0 + 0.4 * exp(-tau * 6.0))
+      * pow(length(dir), 5.0) * smoothstep(0.0, 0.06, tau);
+  return vec4(p, tone);
+}
+
+vec4 targetFor(int kind, sampler2D tex, float wave, vec2 uv, float seed, out float b){
+  if (kind == 0) return galaxyT(uv, seed, b);
+  if (kind == 2) return fireworkT(uv, seed, b);
+  return shapeT(tex, wave, uv, seed, b);
+}
+
+void main(){
+  vec2 uv = gl_FragCoord.xy / resolution.xy;
+  vec3 pos = texture2D(texturePosition, uv).xyz;
+  vec3 vel = texture2D(textureVelocity, uv).xyz;
+  float seed = hash12(uv * vec2(913.1, 557.7));
+  float bA, bB;
+  vec4 A = targetFor(uPrevKind, uPrevTex, uPrevWave, uv, seed, bA);
+  vec4 B = targetFor(uNextKind, uNextTex, uNextWave, uv, seed, bB);
+  // 起点 = 切幕那一刻粒子的真实位置（连续点击也从当前位置接着走）；切完之后上一幕会继续动（烟花），所以起点逐渐让给 A
+  vec3 origin = texture2D(textureOrigin, uv).xyz;
+  // 每个粒子错开出发（随机 + 按位置的波），各自用五次缓动走完约 80% 的变形时长
+  float delay = 0.2 * (0.5 * seed + 0.5 * (0.5 + 0.5 * sin(dot(B.xyz, vec3(0.62, 0.41, 0.3)))));
+  float t = clamp((uMorph - delay) / 0.8, 0.0, 1.0);
+  float blend = t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
+  float transit = sin(PI * t);
+  vec3 desired = mix(uPrevKind == 2 ? A.xyz : origin, B.xyz, blend);
+  // 流动：curl 场直接加在“要去的位置”上，两端为零、中途最大，所以是一整片顺滑地流过去
+  vec3 jitter = hash31(seed * 91.7 + 3.1) * 1.6;
+  desired += flowField(desired * 0.55 * uNoiseScale / 0.35 + jitter, uTime) * transit * uNoise * 1.5;
+  // 鼠标：紧凑的放大镜——位移和到鼠标的距离成正比，中心和边缘都为零，字的中间不会空掉
+  vec3 md = desired - uMouse; md -= uCamDir * dot(md, uCamDir);
+  float q = length(md) / uMouseRad;
+  float lens = q < 1.0 ? (1.0 - q * q) * (1.0 - q * q) * uMouseOn : 0.0;
+  desired += md * (uMouseStr + 0.012 * sin(q * 9.0 - uTime * 2.2)) * lens * uMouseSign;
+  // 稳定的阻尼弹簧跟着 desired 走
+  vec3 acc = (desired - pos) * 85.0;
+  vec3 bd = pos - uBurstC;
+  acc += normalize(bd + 1e-4) * uBurst * 16.0 * (0.4 + seed) * exp(-dot(bd, bd) * 0.03);
+  vel += acc * uDelta;
+  vel *= exp(-12.5 * uDelta);
+  float sp = length(vel); if (sp > 60.0) vel *= 60.0 / sp;
+  float b = clamp(mix(bA, bB, blend) * (1.0 + 0.15 * lens), 0.0, 2.5);
+  float tone = clamp(t < 0.5 ? A.w : B.w, 0.0, 1.0);
+  gl_FragColor = vec4(vel, floor(b / 2.5 * 31.0 + 0.5) * 2.0 + tone * 0.98);
+}`;
+
+const originShader = /* glsl */`
+uniform float uSnap;
+void main(){
+  vec2 uv = gl_FragCoord.xy / resolution.xy;
+  gl_FragColor = uSnap > 0.5 ? texture2D(texturePosition, uv) : texture2D(textureOrigin, uv);
+}`;
+
+const posShader = /* glsl */`
+uniform float uDelta;
+void main(){
+  vec2 uv = gl_FragCoord.xy / resolution.xy;
+  vec4 p = texture2D(texturePosition, uv);
+  p.xyz += texture2D(textureVelocity, uv).xyz * uDelta;
+  gl_FragColor = p;
+}`;
+
+const gpu = new GPUComputationRenderer(SIZE, SIZE, renderer);
+if (isIOS) gpu.setDataType(THREE.HalfFloatType);
+const pos0 = gpu.createTexture(), vel0 = gpu.createTexture();
+for (let k = 0; k < MAX; k++) {   // 开场：一团散开的星尘，被吸进星系
+  const v = new THREE.Vector3(gauss(), gauss(), gauss()).multiplyScalar(4.5);
+  pos0.image.data.set([v.x, v.y, v.z, 1], k * 4);
+  vel0.image.data.set([0, 0, 0, 0], k * 4);
+}
+const posVar = gpu.addVariable('texturePosition', posShader, pos0);
+const velVar = gpu.addVariable('textureVelocity', velShader, vel0);
+const oriVar = gpu.addVariable('textureOrigin', originShader, gpu.createTexture());
+gpu.setVariableDependencies(posVar, [posVar, velVar]);
+gpu.setVariableDependencies(velVar, [posVar, velVar, oriVar]);
+gpu.setVariableDependencies(oriVar, [posVar, oriVar]);
+oriVar.material.uniforms.uSnap = { value: 1 };
+posVar.material.uniforms.uDelta = { value: 0 };
+const U = velVar.material.uniforms;
+Object.assign(U, {
+  uTime: { value: 0 }, uDelta: { value: 0 }, uMorph: { value: 1 }, uNoise: { value: params.noise }, uNoiseScale: { value: params.noiseScale },
+  uSpring: { value: params.spring }, uFwTime: { value: 0 }, uTilt: { value: 1.22 }, uFwHide: { value: INTRO ? 1 : 0 },
+  uMouseStr: { value: params.mouseStr }, uMouseRad: { value: params.mouseRad }, uMouseOn: { value: 0 }, uMouseSign: { value: 1 },
+  uBurst: { value: 0 }, uMouse: { value: new THREE.Vector3(99, 99, 99) }, uCamDir: { value: new THREE.Vector3(0, 0, -1) },
+  uBurstC: { value: new THREE.Vector3() }, uSpin: { value: SPIN },
+  uPrevKind: { value: 0 }, uNextKind: { value: 0 }, uPrevWave: { value: 0 }, uNextWave: { value: 0 },
+  uPrevTex: { value: TEX.hello }, uNextTex: { value: TEX.hello },
+  uGalaxy: { value: TEX.galaxy }, uFw: { value: TEX.fw }, uHello: { value: TEX.hello },
+  uShellC0: { value: shellC0 },
+});
+const gpuErr = gpu.init();
+if (gpuErr) { tell('hc-intro-fail'); console.error(gpuErr); document.body.insertAdjacentHTML('beforeend', `<div class="nogl">${gpuErr}</div>`); }
+
+// ---------- 画粒子 ----------
+const geo = new THREE.BufferGeometry();
+const ref = new Float32Array(MAX * 2);
+for (let k = 0; k < MAX; k++) { ref[k * 2] = (k % SIZE + 0.5) / SIZE; ref[k * 2 + 1] = (Math.floor(k / SIZE) + 0.5) / SIZE; }
+geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(MAX * 3), 3));
+geo.setAttribute('ref', new THREE.BufferAttribute(ref, 2));
+geo.setDrawRange(0, params.count);
+
+const pointMat = new THREE.ShaderMaterial({
+  uniforms: {
+    uPos: { value: null }, uVel: { value: null }, uSize: { value: params.size }, uPR: { value: renderer.getPixelRatio() },
+    uDistScale: { value: 1 }, uBright: { value: params.bright },
+    uPal: { value: Array.from({ length: 15 }, () => new THREE.Color()) }, uRainbow: { value: 1 },
+  },
+  vertexShader: /* glsl */`
+    uniform sampler2D uPos, uVel; uniform float uSize, uPR, uDistScale, uBright;
+    uniform vec3 uPal[15]; uniform float uRainbow;
+    attribute vec2 ref;
+    varying vec3 vCol; varying float vA;
+    float hash(vec2 p){ return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+    void main(){
+      vec4 p = texture2D(uPos, ref); vec4 v = texture2D(uVel, ref);
+      float hi = floor(v.w * 0.5); float b = hi / 31.0 * 2.5; float tone = clamp((v.w - hi * 2.0) / 0.98, 0.0, 1.0);
+      float s = hash(ref);
+      int seg = int(min(4.0, floor(tone * 5.0))); float lt = clamp(tone * 5.0 - float(seg), 0.0, 1.0);
+      vec3 c0 = uPal[seg * 3], c1 = uPal[seg * 3 + 1], c2 = uPal[seg * 3 + 2];
+      vec3 c = lt < 0.5 ? mix(c0, c1, lt * 2.0) : mix(c1, c2, lt * 2.0 - 1.0);
+      if (seg == 3 && uRainbow > 0.5) c = clamp(abs(mod(lt * 6.0 + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0, 0.0, 1.0) * 0.92 + 0.08;
+      c = mix(c, vec3(1.0, 0.96, 0.9), clamp(length(v.xyz) * 0.035, 0.0, 0.55));   // 跑得快的粒子发白
+      vec4 mv = modelViewMatrix * vec4(p.xyz, 1.0);
+      gl_Position = projectionMatrix * mv;
+      gl_PointSize = b < 0.01 ? 0.0 : uSize * uPR * (0.55 + s * s * 1.4) * uDistScale * (12.0 / -mv.z) * (0.45 + 0.55 * min(b, 1.6));
+      vCol = c; vA = b * uBright;
+    }`,
+  fragmentShader: /* glsl */`
+    varying vec3 vCol; varying float vA;
+    void main(){
+      float r = length(gl_PointCoord - 0.5); if (r > 0.5) discard;
+      float a = smoothstep(0.5, 0.0, r); gl_FragColor = vec4(vCol, a * a * vA);
+    }`,
+  transparent: true, depthWrite: false, depthTest: false, blending: THREE.AdditiveBlending,
+});
+const points = new THREE.Points(geo, pointMat);
+points.frustumCulled = false;
+scene.add(points);
+
+// ---------- 后处理：辉光 + 色差 ----------
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), params.bloom, params.bloomRad, 0.15);
+composer.addPass(bloom);
+const caPass = new ShaderPass({
+  uniforms: { tDiffuse: { value: null }, uAmount: { value: params.ca }, uTime: { value: 0 } },
+  vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+  fragmentShader: /* glsl */`
+    uniform sampler2D tDiffuse; uniform float uAmount, uTime; varying vec2 vUv;
+    void main(){
+      vec2 d = vUv - 0.5; float r = length(d);
+      vec2 off = d * uAmount * (0.4 + r * 3.0);     // 越靠边缘红蓝分得越开
+      vec3 c = vec3(texture2D(tDiffuse, vUv + off).r, texture2D(tDiffuse, vUv).g, texture2D(tDiffuse, vUv - off).b);
+      c *= smoothstep(1.0, 0.28, r);                 // 暗角
+      c += (fract(sin(dot(vUv * 1000.0 + uTime, vec2(12.9898, 78.233))) * 43758.5453) - 0.5) * 0.006;
+      gl_FragColor = vec4(c, 1.0);
+    }`,
+});
+composer.addPass(caPass);
+composer.addPass(new OutputPass());
+
+// ---------- 幕次 ----------
+const ALL_STAGES = [
+  { name: '第一幕 · 红茶螺旋', kind: 1, tex: TEX.teacup },
+  { name: '第二幕 · 马戏帐篷', kind: 1, tex: TEX.tent },
+  { name: '第三幕 · 欢迎', kind: 1, tex: TEX.hello },
+  { name: '第四幕 · 烟花', kind: 2 },
+  { name: '终幕 · 入场券', kind: 1, tex: TEX.ticket, ticket: true },
+];
+const STAGES = INTRO === 'fw' ? ALL_STAGES.slice(3) : INTRO ? ALL_STAGES.slice(4) : ALL_STAGES;
+const dotsEl = document.getElementById('dots'), nameEl = document.getElementById('name');
+dotsEl.innerHTML = STAGES.map(() => '<span></span>').join('');
+let stageIdx = 0, morph = 0, morphDur = params.morphDur, fwStart = 0, time = 0;
+
+function setSide(side, st) {
+  U[`u${side}Kind`].value = st.kind;
+  U[`u${side}Tex`].value = st.tex || TEX.hello;
+  U[`u${side}Wave`].value = st.wave || 0;
+}
+function showStage() {
+  params.stage = STAGES[stageIdx].name;
+  [...dotsEl.children].forEach((d, i) => d.classList.toggle('on', i === stageIdx));
+  nameEl.style.opacity = 0;
+  setTimeout(() => { nameEl.textContent = STAGES[stageIdx].name; nameEl.style.opacity = 1; }, 300);
+}
+function goTo(i) {
+  const prev = STAGES[stageIdx];
+  stageIdx = ((i % STAGES.length) + STAGES.length) % STAGES.length;
+  const next = STAGES[stageIdx];
+  setSide('Prev', prev); setSide('Next', next);
+  morph = 0; morphDur = params.morphDur; oriVar.material.uniforms.uSnap.value = 1;
+  if (next.kind === 2) { fwStart = time; morphDur = 0.5; U.uBurstC.value.set(0, -0.3, 0); U.uBurst.value = 0.6; }
+  showStage();
+}
+setSide('Prev', STAGES[0]); setSide('Next', STAGES[0]); showStage();
+if (STAGES[0].kind === 2) {   // 烟花开场：第一轮直接在半空依次炸开（不显示字），之后从地面升空；7 秒后（或点一下）收成入场券
+  fwStart = -0.2;
+  setTimeout(() => { if (stageIdx === 0) goTo(1); }, 7000);
+}
+
+// ---------- 入场券：点一下，粒子票换成真票，侧过身从幕布中缝递进去 ----------
+// 嵌在网站里（?embed=1）：票一进中缝就发 hc-intro-done，外层网页马上拉开幕布；单独打开时过一会回到开头
+const tkClip = document.getElementById('tkClip'), tkEl = document.getElementById('tkImg'), slotEl = document.getElementById('tkSlot');
+if (tkImg) tkEl.src = tkImg.src;
+let inserting = false, pendingInsert = false;
+const TK_CORNERS = [[-1, 1], [1, 1], [1, -1], [-1, -1]].map(([sx, sy]) => new THREE.Vector3(sx * TK_W / 2 * S, -TK_DY * S + sy * TK_H / 2 * S, 0));
+function ticketRect() {   // 票四个角投到屏幕上
+  let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+  for (const c of TK_CORNERS) {
+    const v = c.clone().project(camera), x = (v.x + 1) / 2 * innerWidth, y = (1 - v.y) / 2 * innerHeight;
+    x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y);
+  }
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+}
+function insertTicket() {
+  if (inserting || !tkImg) return;
+  inserting = true;
+  const r = ticketRect(), cx = innerWidth / 2;
+  Object.assign(tkEl.style, { left: r.x + 'px', top: r.y + 'px', width: r.w + 'px', height: r.h + 'px', transform: 'none', transition: 'opacity .3s ease' });
+  tkClip.style.display = 'block';
+  Object.assign(slotEl.style, { left: (cx - 1) + 'px', top: (r.y + r.h * 0.02) + 'px', height: (r.h * 0.96) + 'px', display: 'block' });
+  requestAnimationFrame(() => { tkEl.style.opacity = 1; });
+  setTimeout(() => {   // 粒子和文字退场；嵌在网站里时页面变透明，露出合着的幕布
+    renderer.domElement.style.opacity = 0;
+    document.querySelectorAll('.brand,.hud,.lil-gui.root').forEach(e => { e.style.transition = 'opacity .6s'; e.style.opacity = 0; e.style.pointerEvents = 'none'; });
+    if (EMBED) document.documentElement.classList.add('see-through');
+  }, 300);
+  setTimeout(() => {   // 票侧过身，从中缝递进去
+    tkEl.style.transition = 'transform 1s cubic-bezier(.5,0,.55,1), opacity .25s ease .8s';
+    tkEl.style.transform = `translateX(${cx - (r.x + r.w / 2)}px) rotateY(90deg) scale(.94)`;
+    tkEl.style.opacity = 0;
+  }, 450);
+  setTimeout(() => { slotEl.style.opacity = 1; }, 1050);
+  setTimeout(() => {   // 中缝亮着的时候幕布就开始拉，不停顿
+    tell('hc-intro-done');
+  }, 1300);
+  setTimeout(() => { slotEl.style.opacity = 0; }, 1550);
+  if (!(EMBED && parent !== window)) setTimeout(resetTicket, 3200);
+}
+function resetTicket() {
+  tkClip.style.display = 'none'; tkEl.style.opacity = 0; slotEl.style.display = 'none';
+  renderer.domElement.style.opacity = 1;
+  document.querySelectorAll('.brand,.hud,.lil-gui.root').forEach(e => { e.style.opacity = 1; e.style.pointerEvents = ''; });
+  document.documentElement.classList.remove('see-through');
+  inserting = false; pendingInsert = false; goTo(0);
+  if (STAGES[0].kind === 2) { fwStart = time - 0.2; setTimeout(() => { if (stageIdx === 0) goTo(1); }, 7000); }
+}
+// 点击：前几幕切到下一幕；到了入场券，粒子拼好之后再点就是塞票
+function advance() {
+  if (inserting) return;
+  if (STAGES[stageIdx].ticket) { if (morph > 0.8) insertTicket(); else pendingInsert = true; return; }   // 票还在聚拢时点：拼好就塞
+  goTo(stageIdx + 1);
+}
+
+// ---------- 主题 ----------
+function applyTheme() {
+  const th = THEMES[params.theme];
+  th.pal.forEach((cs, i) => cs.forEach((c, j) => pointMat.uniforms.uPal.value[i * 3 + j].set(c)));
+  pointMat.uniforms.uRainbow.value = th.rainbow;
+  scene.background = new THREE.Color(th.bg);
+  document.documentElement.style.setProperty('--bg', th.bg);
+  document.documentElement.style.setProperty('--accent', th.pal[2][2]);
+  const wp = WORD_PALS[params.wordPal];
+  if (wp && params.theme !== '黑白') wp.forEach((c, j) => pointMat.uniforms.uPal.value[6 + j].set(c));
+}
+applyTheme();
+
+// ---------- 面板 ----------
+const gui = new GUI({ title: '控制台' });
+gui.add(params, 'fps').name('FPS').listen().disable();
+gui.add(params, 'stage').name('当前一幕').listen().disable();
+const fP = gui.addFolder('粒子');
+fP.add(params, 'count', 10000, MAX, 1000).name('粒子数').onChange(v => geo.setDrawRange(0, v));
+fP.add(params, 'size', 0.5, 6, 0.1).name('大小').onChange(v => pointMat.uniforms.uSize.value = v);
+fP.add(params, 'bright', 0.03, 1, 0.01).name('亮度').onChange(v => pointMat.uniforms.uBright.value = v);
+const fN = gui.addFolder('噪声与变形');
+fN.add(params, 'noise', 0, 4, 0.05).name('噪声强度').onChange(v => U.uNoise.value = v);
+fN.add(params, 'noiseScale', 0.05, 1.5, 0.01).name('噪声尺度').onChange(v => U.uNoiseScale.value = v);
+fN.add(params, 'morphDur', 0.8, 6, 0.1).name('变形时长 秒');
+const fM = gui.addFolder('鼠标');
+fM.add(params, 'mouseMode', ['放大', '收缩']).name('模式');
+fM.add(params, 'mouseStr', 0, 0.8, 0.02).name('力度').onChange(v => U.uMouseStr.value = v);
+fM.add(params, 'mouseRad', 0.5, 4, 0.05).name('半径').onChange(v => U.uMouseRad.value = v);
+const fW = gui.addFolder('第三幕文字');
+fW.add(params, 'words', Object.keys(WORD_LAYOUTS)).name('台词排版').onChange(rebuildWords);
+fW.add(params, 'wordPal', Object.keys(WORD_PALS)).name('文字配色').onChange(applyTheme);
+fW.add({ go: () => goTo(2) }, 'go').name('跳到这一幕看看');
+const fV = gui.addFolder('画面');
+fV.add(params, 'theme', Object.keys(THEMES)).name('颜色主题').onChange(applyTheme);
+fV.add(params, 'bloom', 0, 3, 0.05).name('辉光强度').onChange(v => bloom.strength = v);
+fV.add(params, 'bloomRad', 0, 1.5, 0.01).name('辉光半径').onChange(v => bloom.radius = v);
+fV.add(params, 'ca', 0, 0.02, 0.0005).name('色差').onChange(v => caPass.uniforms.uAmount.value = v);
+const fS = gui.addFolder('跳到某一幕');
+STAGES.forEach((st, i) => fS.add({ go: () => { if (!inserting) goTo(i); } }, 'go').name(st.name));
+const fH = gui.addFolder('操作');
+const HELP = { 点击: '下一幕；入场券上点击 = 塞票', 鼠标: '移到粒子上 = 放大镜', 键盘: '空格 / → 下一幕，← 上一幕，R 回到红茶' };
+Object.keys(HELP).forEach(k => fH.add(HELP, k).name(k).disable());
+gui.add(params, 'next').name('下一幕 ▸');
+gui.add(params, 'home').name('回到红茶');
+[fP, fN, fM, fV, fS].forEach(f => f.close());
+if (innerWidth < 600 || INTRO) gui.close();
+
+// ---------- 鼠标 / 触摸 ----------
+const ndc = new THREE.Vector2(9, 9);
+const ray = new THREE.Raycaster(), plane = new THREE.Plane(), hit = new THREE.Vector3();
+let pointerIn = false, lastMove = -99, down = null;
+const cv = renderer.domElement;
+cv.addEventListener('pointermove', e => {
+  ndc.set(e.clientX / innerWidth * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+  pointerIn = true; lastMove = time;
+  if (down && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 10) down.moved = true;
+});
+cv.addEventListener('pointerleave', () => { pointerIn = false; });
+cv.addEventListener('pointerdown', e => {
+  cv.setPointerCapture(e.pointerId);
+  ndc.set(e.clientX / innerWidth * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+  pointerIn = true; lastMove = time;
+  down = { x: e.clientX, y: e.clientY, t: performance.now(), moved: false };
+  });
+const up = e => {
+  if (!down) return;
+  if (!down.moved && performance.now() - down.t < 350) advance();
+  down = null;
+  if (e.pointerType !== 'mouse') pointerIn = false;
+};
+cv.addEventListener('pointerup', up);
+cv.addEventListener('pointercancel', up);
+addEventListener('keydown', e => {
+  if (e.code === 'Space' || e.code === 'ArrowRight') { e.preventDefault(); advance(); }
+  if (inserting) return;
+  if (e.code === 'ArrowLeft') goTo(stageIdx - 1);
+  if (e.code === 'KeyR') goTo(0);
+});
+
+// ---------- 尺寸 ----------
+function resize() {
+  const w = innerWidth, h = innerHeight, aspect = w / h;
+  camera.aspect = aspect;
+  const tanH = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * 2;
+  camDist = Math.max(10.9, 12.2 / (tanH * aspect));   // 竖屏时退远，保证 12 个单位宽都看得见
+  camera.updateProjectionMatrix();
+  renderer.setSize(w, h); composer.setSize(w, h); bloom.resolution.set(w, h);
+  pointMat.uniforms.uPR.value = renderer.getPixelRatio();
+  pointMat.uniforms.uDistScale.value = Math.sqrt(camDist / 12);
+}
+addEventListener('resize', resize); resize();
+
+// ---------- 主循环 ----------
+let last = performance.now(), fpsT = last, frames = 0;
+const camDir = new THREE.Vector3();
+let swayAmp = 0.12, perfN = 0, perfT0 = 0;
+function frame(now) {
+  requestAnimationFrame(frame);
+  const dt = Math.min((now - last) / 1000, 1 / 30); last = now; time += dt;
+
+  morph = Math.min(1, morph + dt / morphDur);
+  if (pendingInsert && morph > 0.8) { pendingInsert = false; if (STAGES[stageIdx].ticket) insertTicket(); }
+  U.uTime.value = time; U.uDelta.value = dt; posVar.material.uniforms.uDelta.value = dt;
+  U.uMorph.value = morph; U.uFwTime.value = time - fwStart;
+  U.uBurst.value *= Math.exp(-dt * 7);
+
+  // 镜头：慢慢左右摇，再跟着鼠标轻微视差
+  swayAmp += ((STAGES[stageIdx].ticket ? 0 : 0.12) - swayAmp) * Math.min(1, dt * 1.5);
+  const yaw = Math.sin(time * 0.2) * swayAmp, pitch = 0;
+  camera.position.set(Math.sin(yaw) * camDist, Math.sin(pitch) * camDist, Math.cos(yaw) * Math.cos(pitch) * camDist);
+  camera.lookAt(0, 0, 0);
+  camera.getWorldDirection(camDir); U.uCamDir.value.copy(camDir);
+
+  ray.setFromCamera(ndc, camera);
+  plane.setFromNormalAndCoplanarPoint(camDir, new THREE.Vector3());
+  if (ray.ray.intersectPlane(plane, hit)) U.uMouse.value.copy(hit);
+  const on = pointerIn && (time - lastMove < 2.5 || down) ? 1 : 0;
+  U.uMouseOn.value += (on - U.uMouseOn.value) * Math.min(1, dt * 6);
+  U.uMouseSign.value = params.mouseMode === '放大' ? 1 : -0.7;
+
+  gpu.compute();
+  oriVar.material.uniforms.uSnap.value = 0;
+  pointMat.uniforms.uPos.value = gpu.getCurrentRenderTarget(posVar).texture;
+  pointMat.uniforms.uVel.value = gpu.getCurrentRenderTarget(velVar).texture;
+
+  caPass.uniforms.uTime.value = time;
+  caPass.uniforms.uAmount.value = params.ca * (1 + 2.5 * Math.sin(Math.PI * morph));   // 变形途中色差加大
+  composer.render();
+
+  // 嵌进网站时：第一帧通知外层；前 2.5 秒平均不到 12 帧就算太卡，退回普通幕布
+  if (EMBED) {
+    perfN++;
+    if (perfN === 1) { perfT0 = now; tell('hc-intro-ready'); }
+    else if (perfT0 && now - perfT0 > 2500) { if (perfN < 30) tell('hc-intro-fail'); perfT0 = 0; }
+  }
+  frames++;
+  if (now - fpsT > 500) { params.fps = Math.round(frames * 1000 / (now - fpsT)); frames = 0; fpsT = now; }
+}
+requestAnimationFrame(frame);
+window.__stage = { goTo, advance, insertTicket, get idx() { return stageIdx; }, params,
+  setWords(layout, pal) { if (layout) { params.words = layout; rebuildWords(); } if (pal) { params.wordPal = pal; applyTheme(); } gui.controllersRecursive().forEach(c => c.updateDisplay()); } };
+</script>
+</body>
+</html>
