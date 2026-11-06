@@ -134,6 +134,7 @@ if (!renderer.capabilities.isWebGL2) {
 renderer.setPixelRatio(Math.min(devicePixelRatio, COARSE ? 1.5 : 2));
 renderer.setSize(innerWidth, innerHeight);
 document.body.prepend(renderer.domElement);
+renderer.domElement.addEventListener('webglcontextlost', () => tell('hc-intro-fail'));   // 显卡上下文丢了画面会冻住，也退回普通幕布
 
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 100);
@@ -247,6 +248,7 @@ let hello = sampleShape(drawWords(params.words), 0.25, 2);
 
 // 终幕：入场券（10-26 定稿 A3·薇）。奶油色印满密度，酒红卡面稀疏铺一层，粒子拼出整张票
 const tkImg = await new Promise(res => { const im = new Image(); im.onload = () => res(im); im.onerror = () => res(null); im.src = window.TICKET_SRC || ''; });
+if (!tkImg) tell('hc-intro-fail');   // 票面没加载到就塞不了票，别把观众挡在外面，退回普通幕布
 const TK_H = 800, TK_W = tkImg ? TK_H * tkImg.naturalWidth / tkImg.naturalHeight : 354, TK_DY = 8;
 const ticket = sampleShape(ctx => {
   if (!tkImg) { ctx.fillStyle = col(0.9); ctx.fillRect(-TK_W / 2, -TK_H / 2, TK_W, TK_H); return; }
