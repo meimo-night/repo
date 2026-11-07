@@ -21,6 +21,25 @@
   /* 网站开场版：只有入场券（可带烟花），不显示标题和幕名 */
   html.intro .brand, html.intro .hud { display: none; }
   html.embed .lil-gui.root { display: none; }
+  /* 五幕版（11-07 用户定）：可以点时出现涟漪；按住任意处跳过，第一幕底下有一行提示 */
+  html.full canvas { cursor: pointer; }
+  html.full .lil-gui.root { display: none; }
+  #tap { position: fixed; left: 0; top: 0; width: 0; height: 0; pointer-events: none; opacity: 0; transition: opacity .5s; }
+  #tap.on { opacity: 1; }
+  #tap i { position: absolute; left: -30px; top: -30px; width: 60px; height: 60px; border-radius: 50%; border: 1px solid #ffe9c8; box-shadow: 0 0 14px rgba(255, 214, 160, .55), inset 0 0 8px rgba(255, 214, 160, .3); opacity: 0; }
+  #tap.on i { animation: tap 2.2s cubic-bezier(.23, 1, .32, 1) infinite; }
+  #tap.on i + i { animation-delay: .55s; }
+  @keyframes tap { 0% { transform: scale(.35); opacity: 0; } 18% { opacity: .85; } 100% { transform: scale(1.25); opacity: 0; } }
+  #tip { position: fixed; left: 16px; right: 16px; bottom: calc(34px + env(safe-area-inset-bottom)); text-align: center; color: #ffe9c8; font: 500 16px/1.5 "Songti SC", "STSong", serif; letter-spacing: .24em; opacity: 0; pointer-events: none; user-select: none; -webkit-user-select: none; transition: opacity .9s ease; }
+  #tip.on { opacity: .68; }
+  html.full canvas { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+  #hold { display: none; position: fixed; left: 0; top: 0; width: 76px; height: 76px; margin: -38px 0 0 -38px; pointer-events: none; opacity: 0; transition: opacity .2s; overflow: visible; }
+  html.full #hold { display: block; }
+  html.art #tip, html.art #tap, html.art #hold { display: none !important; }   /* ?ui=art：提示和反馈都交给粒子，屏幕上没有界面元素 */
+  @media (pointer: coarse) { #hold { width: 132px; height: 132px; margin: -66px 0 0 -66px; } }   /* 手机上圈要比手指大，不然看不见 */
+  #hold.on { opacity: 1; }
+  #hold circle { fill: none; stroke: #ffe9c8; stroke-width: 1.5; stroke-dasharray: 201; stroke-dashoffset: 201; transform: rotate(-90deg); transform-origin: center; filter: drop-shadow(0 0 5px rgba(255, 214, 160, .8)); transition: stroke-dashoffset .2s cubic-bezier(.23, 1, .32, 1); }
+  #hold.on circle { stroke-dashoffset: 0; transition: stroke-dashoffset .75s linear; }
   canvas { display: block; touch-action: none; cursor: crosshair; }
   .brand { position: fixed; left: 24px; top: 20px; pointer-events: none; user-select: none; }
   .brand b { display: block; font: 600 15px/1.2 "Songti SC", "STSong", serif; letter-spacing: .32em; }
@@ -55,6 +74,9 @@
   <div class="dots" id="dots"></div>
   <div class="stage-name" id="name">第一幕 · 红茶螺旋</div>
 </div>
+<div id="tap"><i></i><i></i></div>
+<div id="tip">轻点下一幕　·　按住跳过</div>
+<svg id="hold" viewBox="0 0 76 76" aria-hidden="true"><circle cx="38" cy="38" r="32"/></svg>
 <div id="tkClip"><img id="tkImg" alt="" draggable="false"></div>
 <div id="tkSlot"></div>
 <script src="ticket.js"></script>
@@ -80,9 +102,15 @@ const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
 
 // ?embed=1：接在网站前面当开场，票塞进去后通知外层网页拉开幕布
 const QS = new URLSearchParams(location.search), EMBED = QS.has('embed');
-// ?intro=ticket：开场直接拼入场券；?intro=fw：先放烟花，几秒后（或点一下）收成入场券；?intro=full：五幕自动放（11-07），点一下提前进下一幕。不带 = 五幕完整版，手动点
+// ?intro=ticket：开场直接拼入场券；?intro=fw：先放烟花，几秒后（或点一下）收成入场券；?intro=full：五幕，点一下放下一幕，按住任意处跳过，Esc 同（11-07）。不带 = 五幕完整版，手动点
 const INTRO = QS.get('intro');
 if (INTRO) document.documentElement.classList.add('intro');
+const UI = INTRO === 'full';
+if (UI) document.documentElement.classList.add('full');
+const ART = UI && QS.get('ui') === 'art', TALL = innerHeight > innerWidth;   // ?ui=art（11-07 小样）：提示用粒子拼在茶杯下，按住时粒子被搅成漩涡
+if (ART) document.documentElement.classList.add('art');
+// 第一次来只提示“轻点继续”，希望完整看一遍；按住照样有效但不写。看过的人（或地址带 &seen）才写“按住跳过”
+let SEEN = QS.has('seen'); try { if (localStorage.getItem('hc-intro-seen')) SEEN = true; } catch (e) {}
 if (EMBED) document.documentElement.classList.add('embed');
 // 告诉外层网页：hc-intro-ready 第一帧画出来了；hc-intro-fail 跑不起来或太卡，外层退回普通幕布；hc-intro-done 票塞进去了
 const tell = type => { if (EMBED && parent !== window) parent.postMessage({ type }, '*'); };
@@ -176,7 +204,7 @@ function sampleShape(draw, depth = 0.9, seg = 0) {
 }
 
 // 第一幕：催眠红茶头像的螺旋茶杯（也是开场的“螺旋星系”）。螺线白、茶汤红茶色、杯身奶白、热气淡
-const CUP_S = 7.8, CUP_DY = 15.5;
+const CUP_S = !ART ? 7.8 : TALL ? 6.5 : 6.9, CUP_DY = !ART ? 15.5 : TALL ? 5.5 : 8;   // 提示分两行放杯子下面，茶杯缩小上移腾位置
 const teacup = sampleShape(ctx => {
   ctx.scale(CUP_S, CUP_S); ctx.translate(0, CUP_DY);
   ctx.save(); ctx.translate(0, -7); ctx.fillStyle = col(0.62);
@@ -194,6 +222,13 @@ const teacup = sampleShape(ctx => {
   ctx.stroke(new Path2D('M-30-4C-30 18-17 30 0 30C17 30 30 18 30-4'));
   ctx.stroke(new Path2D('M29 4C42 0 45 15 27 19'));
   ctx.lineWidth = 1.9; ctx.stroke(new Path2D('M-17 35Q0 39 17 35'));
+  if (ART) {   // 提示是茶杯这张图的一部分：和杯子一起拼出来，点一下和杯子一起散掉
+    ctx.setTransform(1, 0, 0, 1, CW / 2, CH / 2); ctx.fillStyle = col(0.9); ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = `600 ${TALL ? 58 : 46}px "Songti SC", "STSong", serif`; ctx.letterSpacing = TALL ? '10px' : '9px';
+    const y0 = TALL ? 330 : 366, dy = TALL ? 72 : 56;
+    ctx.fillText('轻点继续', 5, y0);
+    if (SEEN) ctx.fillText('按住跳过', 5, y0 + dy);
+  }
 }, 0.6, 0);
 const SPIN = new THREE.Vector4(0, -(-4 + CUP_DY) * CUP_S * S, 26 * CUP_S * S, 9.2 * CUP_S * S);
 
@@ -369,8 +404,8 @@ vec3 hash31(float p){ vec3 p3=fract(vec3(p)*vec3(.1031,.1030,.0973)); p3+=dot(p3
 
 const velShader = /* glsl */`
 uniform float uTime, uDelta, uMorph, uNoise, uNoiseScale, uSpring, uFwTime, uTilt, uFwHide;
-uniform float uMouseStr, uMouseRad, uMouseOn, uMouseSign, uBurst;
-uniform vec3 uMouse, uCamDir, uBurstC;
+uniform float uMouseStr, uMouseRad, uMouseOn, uMouseSign, uBurst, uHold, uPulseR, uPulseA;
+uniform vec3 uMouse, uCamDir, uBurstC, uHoldC, uPulseC;
 uniform vec4 uSpin;
 uniform int uPrevKind, uNextKind;
 uniform float uPrevWave, uNextWave;
@@ -475,6 +510,23 @@ void main(){
   float q = length(md) / uMouseRad;
   float lens = q < 1.0 ? (1.0 - q * q) * (1.0 - q * q) * uMouseOn : 0.0;
   desired += md * (uMouseStr + 0.012 * sin(q * 9.0 - uTime * 2.2)) * lens * uMouseSign;
+  // 涟漪：一圈波穿过粒子本身，告诉人“可以点了”
+  float pulseB = 0.0;
+  if (uPulseA > 0.001) {
+    vec3 pd = desired - uPulseC; pd -= uCamDir * dot(pd, uCamDir);
+    float pr = length(pd), pz = (pr - uPulseR) / 0.42;
+    pulseB = exp(-pz * pz) * uPulseA;
+    desired += normalize(pd + 1e-4) * pulseB * 0.16;
+  }
+  // 按住：粒子被搅进以手指为心的漩涡（茶杯里那个螺旋）；越近转得越快，松手弹回原形
+  if (uHold > 0.001) {
+    vec2 hd = desired.xy - uHoldC.xy;
+    float hr = length(hd), h2 = uHold * uHold;
+    float ang = h2 * (1.8 + 6.0 / (0.7 + hr)), cs = cos(ang), sn = sin(ang);
+    float pull = 1.0 - h2 * (0.72 + 0.2 * seed);
+    desired.xy = uHoldC.xy + mat2(cs, -sn, sn, cs) * hd * pull;
+    desired.z *= pull;
+  }
   // 稳定的阻尼弹簧跟着 desired 走
   vec3 acc = (desired - pos) * 85.0;
   vec3 bd = pos - uBurstC;
@@ -482,7 +534,7 @@ void main(){
   vel += acc * uDelta;
   vel *= exp(-12.5 * uDelta);
   float sp = length(vel); if (sp > 60.0) vel *= 60.0 / sp;
-  float b = clamp(mix(bA, bB, blend) * (1.0 + 0.15 * lens), 0.0, 2.5);
+  float b = clamp(mix(bA, bB, blend) * (1.0 + 0.15 * lens + 1.5 * pulseB) * (1.0 - 0.45 * uHold), 0.0, 2.5);
   float tone = clamp(t < 0.5 ? A.w : B.w, 0.0, 1.0);
   gl_FragColor = vec4(vel, floor(b / 2.5 * 31.0 + 0.5) * 2.0 + tone * 0.98);
 }`;
@@ -526,6 +578,7 @@ Object.assign(U, {
   uMouseStr: { value: params.mouseStr }, uMouseRad: { value: params.mouseRad }, uMouseOn: { value: 0 }, uMouseSign: { value: 1 },
   uBurst: { value: 0 }, uMouse: { value: new THREE.Vector3(99, 99, 99) }, uCamDir: { value: new THREE.Vector3(0, 0, -1) },
   uBurstC: { value: new THREE.Vector3() }, uSpin: { value: SPIN },
+  uHold: { value: 0 }, uHoldC: { value: new THREE.Vector3() }, uPulseR: { value: 0 }, uPulseA: { value: 0 }, uPulseC: { value: new THREE.Vector3() },
   uPrevKind: { value: 0 }, uNextKind: { value: 0 }, uPrevWave: { value: 0 }, uNextWave: { value: 0 },
   uPrevTex: { value: TEX.hello }, uNextTex: { value: TEX.hello },
   uGalaxy: { value: TEX.galaxy }, uFw: { value: TEX.fw }, uHello: { value: TEX.hello },
@@ -611,7 +664,8 @@ const ALL_STAGES = [
   { name: '终幕 · 入场券', kind: 1, tex: TEX.ticket, ticket: true },
 ];
 const STAGES = INTRO === 'fw' ? ALL_STAGES.slice(3) : INTRO && INTRO !== 'full' ? ALL_STAGES.slice(4) : ALL_STAGES;
-const dotsEl = document.getElementById('dots'), nameEl = document.getElementById('name');
+const dotsEl = document.getElementById('dots'), nameEl = document.getElementById('name'), tapEl = document.getElementById('tap'), tipEl = document.getElementById('tip'), holdEl = document.getElementById('hold');
+let tapAt = -1, clicks = 0, tapX = -1, tapY = -1;
 dotsEl.innerHTML = STAGES.map(() => '<span></span>').join('');
 let stageIdx = 0, morph = 0, morphDur = params.morphDur, fwStart = 0, time = 0;
 
@@ -623,6 +677,7 @@ function setSide(side, st) {
 function showStage() {
   params.stage = STAGES[stageIdx].name;
   [...dotsEl.children].forEach((d, i) => d.classList.toggle('on', i === stageIdx));
+  tapAt = -1;
   nameEl.style.opacity = 0;
   setTimeout(() => { nameEl.textContent = STAGES[stageIdx].name; nameEl.style.opacity = 1; }, 300);
 }
@@ -634,13 +689,8 @@ function goTo(i) {
   morph = 0; morphDur = params.morphDur; oriVar.material.uniforms.uSnap.value = 1;
   if (next.kind === 2) { fwStart = time; morphDur = 0.5; U.uBurstC.value.set(0, -0.3, 0); U.uBurst.value = 0.6; }
   showStage();
-  autoNext();
 }
-// ?intro=full：茶杯、帐篷、欢迎语、烟花各放一会儿自动往下走；到了入场券就停，等观众点
-const AUTO_MS = [3000, 4200, 4500, 7000];
-let autoT = 0;
-function autoNext() { clearTimeout(autoT); if (INTRO !== 'full') return; const d = AUTO_MS[stageIdx]; if (d) autoT = setTimeout(() => goTo(stageIdx + 1), d); }
-setSide('Prev', STAGES[0]); setSide('Next', STAGES[0]); showStage(); autoNext();
+setSide('Prev', STAGES[0]); setSide('Next', STAGES[0]); showStage();
 if (STAGES[0].kind === 2) {   // 烟花开场：第一轮直接在半空依次炸开（不显示字），之后从地面升空；7 秒后（或点一下）收成入场券
   fwStart = -0.2;
   setTimeout(() => { if (stageIdx === 0) goTo(1); }, 7000);
@@ -663,6 +713,7 @@ function ticketRect() {   // 票四个角投到屏幕上
 function insertTicket() {
   if (inserting || !tkImg) return;
   inserting = true;
+  try { localStorage.setItem('hc-intro-seen', '1'); } catch (e) {}
   const r = ticketRect(), cx = innerWidth / 2;
   Object.assign(tkEl.style, { left: r.x + 'px', top: r.y + 'px', width: r.w + 'px', height: r.h + 'px', transform: 'none', transition: 'opacity .3s ease' });
   tkClip.style.display = 'block';
@@ -693,9 +744,17 @@ function resetTicket() {
   inserting = false; pendingInsert = false; goTo(0);
   if (STAGES[0].kind === 2) { fwStart = time - 0.2; setTimeout(() => { if (stageIdx === 0) goTo(1); }, 7000); }
 }
+// 跳过（?intro=full）：直接拿出真票，和正常收票一样从幕布中缝递进去
+function skipIntro() {
+  if (!tkImg || inserting) return;
+  if (!ART || STAGES[stageIdx].ticket) { insertTicket(); return; }
+  goTo(STAGES.length - 1); morphDur = 0.8; pendingInsert = true;   // ?ui=art：漩涡直接收成入场券，再递进幕布
+}
+let holdStart = 0, holdP = 0, holdCentered = false, pulseT = 0;
 // 点击：前几幕切到下一幕；到了入场券，粒子拼好之后再点就是塞票
 function advance() {
   if (inserting) return;
+  clicks++;
   if (STAGES[stageIdx].ticket) { if (morph > 0.8) insertTicket(); else pendingInsert = true; return; }   // 票还在聚拢时点：拼好就塞
   goTo(stageIdx + 1);
 }
@@ -765,7 +824,19 @@ cv.addEventListener('pointerdown', e => {
   pointerIn = true; lastMove = time;
   down = { x: e.clientX, y: e.clientY, t: performance.now(), moved: false };
   });
+// 跳过：按住 0.35 秒后出现圆环，再按 0.75 秒填满就跳过；松手取消
+let holdT1 = 0, holdT2 = 0;
+const holdOff = () => { clearTimeout(holdT1); clearTimeout(holdT2); holdEl.classList.remove('on'); holdStart = 0; };
+cv.addEventListener('pointerdown', e => {
+  if (!UI || STAGES[stageIdx].ticket) return;
+  if (ART) { holdStart = performance.now(); holdCentered = false; return; }
+  holdEl.style.transform = `translate(${e.clientX}px, ${e.clientY}px)`;
+  holdT1 = setTimeout(() => holdEl.classList.add('on'), 350);
+  holdT2 = setTimeout(() => { holdOff(); down = null; skipIntro(); }, 1100);
+});
+addEventListener('pointermove', e => { if (e.pointerType === 'mouse') { tapX = e.clientX; tapY = e.clientY; } if (down && down.moved) holdOff(); });
 const up = e => {
+  holdOff();
   if (!down) return;
   if (!down.moved && performance.now() - down.t < 350) advance();
   down = null;
@@ -774,6 +845,7 @@ const up = e => {
 cv.addEventListener('pointerup', up);
 cv.addEventListener('pointercancel', up);
 addEventListener('keydown', e => {
+  if (e.code === 'Escape' && INTRO === 'full') { skipIntro(); return; }
   if (e.code === 'Space' || e.code === 'ArrowRight') { e.preventDefault(); advance(); }
   if (inserting) return;
   if (e.code === 'ArrowLeft') goTo(stageIdx - 1);
@@ -797,9 +869,62 @@ addEventListener('resize', resize); resize();
 let last = performance.now(), fpsT = last, frames = 0;
 const camDir = new THREE.Vector3();
 let swayAmp = 0.12, perfN = 0, perfT0 = 0;
+// 放映记录：每一幕放了多少帧、卡了几下；看 window.__stage.perf
+const perf = { stages: {}, quality: [] };
+// 自动降画质（11-07）：显卡被别的程序抢、帧率掉到 45 以下时，先降清晰度，再减粒子；只降不升，免得来回闪
+const BASE_PR = renderer.getPixelRatio();
+const QUALITY = [[BASE_PR, 1], [Math.min(BASE_PR, 1.5), 1], [1, 1], [1, 0.6]].filter((q, i, a) => !i || q[0] !== a[i - 1][0] || q[1] !== a[i - 1][1]);
+let qLevel = 0, qN = 0, qT = 0;
+const bootT = performance.now();
+function watchQuality(now, gap) {
+  if (document.hidden || gap > 400) { qT = 0; return; }   // 切走又切回来不算卡
+  if (now - bootT < 2500) return;   // 刚打开时显卡在编译着色器，这几帧不算
+  if (!qT) { qT = now; qN = 0; return; }
+  qN++;
+  if (now - qT < 1000) return;
+  const fps = qN * 1000 / (now - qT); qT = now; qN = 0;
+  if (fps >= 45 || qLevel >= QUALITY.length - 1) return;
+  const [pr, k] = QUALITY[++qLevel];
+  renderer.setPixelRatio(pr); composer.setPixelRatio(pr); resize();
+  geo.setDrawRange(0, Math.round(params.count * k));
+  perf.quality.push({ at: Math.round(now), fps: Math.round(fps), pr, k });
+  qT = 0;   // 重新分配画布这一下不算进下一轮
+}
 function frame(now) {
   requestAnimationFrame(frame);
-  const dt = Math.min((now - last) / 1000, 1 / 30); last = now; time += dt;
+  const gap = now - last;
+  // 上限放宽到 1/15 秒：原来 1/30 时，帧率低于 30 动画会变成慢动作，显得又卡又长
+  const dt = Math.min(gap / 1000, 1 / 15); last = now; time += dt;
+  const rec = perf.stages[stageIdx] || (perf.stages[stageIdx] = { frames: 0, ms: 0, over33: 0, over50: 0, worst: 0 });
+  rec.frames++; rec.ms += gap; if (gap > 33) rec.over33++; if (gap > 50) rec.over50++; if (gap > rec.worst) rec.worst = Math.round(gap);
+  watchQuality(now, gap);
+  if (UI) {   // 涟漪：形状拼好一会儿还没点才出现。前两次等 1.2 秒，学会了等 5 秒；烟花不打断，至少 4 秒
+    if (morph >= 1 && tapAt < 0) tapAt = time;
+    const st = STAGES[stageIdx], wait = Math.max(clicks < 2 ? 1.2 : 5, st.kind === 2 ? 4 : 0);
+    const show = tapAt >= 0 && time - tapAt > wait && !inserting && !down;
+    if (show) {
+      const r = st.ticket ? ticketRect() : null;
+      const x = r ? r.x + r.w / 2 : tapX >= 0 ? tapX : innerWidth / 2, y = r ? r.y + r.h / 2 : tapX >= 0 ? tapY : innerHeight * 0.72;
+      tapEl.style.transform = `translate(${x}px, ${y}px)`;
+    }
+    if (tapEl.classList.contains('on') !== show) tapEl.classList.toggle('on', show);
+    const tip = stageIdx === 0 && !inserting && time > 1.5;   // 提示只在第一幕，点过就不再打扰
+    if (tipEl.classList.contains('on') !== tip) tipEl.classList.toggle('on', tip);
+    if (ART) {
+      // 涟漪：每 2.8 秒一圈，从手指（或画面中心）往外走
+      pulseT = show ? pulseT + dt : 0;
+      const pc = pulseT % 2.8, on = show && pc < 2;
+      U.uPulseR.value = pc * 3.4; U.uPulseA.value = on ? Math.sin(Math.PI * pc / 2) : 0;
+      if (show && pc < dt * 1.5) { if (tapX >= 0 && !st.ticket) U.uPulseC.value.copy(hit); else U.uPulseC.value.set(0, 0, 0); }
+      // 按住 0.12 秒后开始搅，再 0.98 秒搅满；松手很快弹回
+      if (holdStart) {
+        if (!holdCentered && ray.ray.intersectPlane(plane, hit)) { U.uHoldC.value.copy(hit); holdCentered = true; }
+        holdP = Math.min(1, Math.max(holdP, (performance.now() - holdStart - 120) / 980));
+        if (holdP >= 1) { holdStart = 0; down = null; skipIntro(); }
+      } else holdP *= Math.exp(-dt * 7);
+      U.uHold.value = holdP * holdP * (3 - 2 * holdP);
+    }
+  }
 
   morph = Math.min(1, morph + dt / morphDur);
   if (pendingInsert && morph > 0.8) { pendingInsert = false; if (STAGES[stageIdx].ticket) insertTicket(); }
@@ -840,7 +965,7 @@ function frame(now) {
   if (now - fpsT > 500) { params.fps = Math.round(frames * 1000 / (now - fpsT)); frames = 0; fpsT = now; }
 }
 requestAnimationFrame(frame);
-window.__stage = { goTo, advance, insertTicket, get idx() { return stageIdx; }, params,
+window.__stage = { goTo, advance, insertTicket, skipIntro, perf, get idx() { return stageIdx; }, get quality() { return qLevel; }, params,
   setWords(layout, pal) { if (layout) { params.words = layout; rebuildWords(); } if (pal) { params.wordPal = pal; applyTheme(); } gui.controllersRecursive().forEach(c => c.updateDisplay()); } };
 </script>
 </body>
