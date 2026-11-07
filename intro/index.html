@@ -80,7 +80,7 @@ const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
 
 // ?embed=1：接在网站前面当开场，票塞进去后通知外层网页拉开幕布
 const QS = new URLSearchParams(location.search), EMBED = QS.has('embed');
-// ?intro=ticket：开场直接拼入场券；?intro=fw：先放烟花，几秒后（或点一下）收成入场券。不带 = 五幕完整版
+// ?intro=ticket：开场直接拼入场券；?intro=fw：先放烟花，几秒后（或点一下）收成入场券；?intro=full：五幕自动放（11-07），点一下提前进下一幕。不带 = 五幕完整版，手动点
 const INTRO = QS.get('intro');
 if (INTRO) document.documentElement.classList.add('intro');
 if (EMBED) document.documentElement.classList.add('embed');
@@ -522,7 +522,7 @@ posVar.material.uniforms.uDelta = { value: 0 };
 const U = velVar.material.uniforms;
 Object.assign(U, {
   uTime: { value: 0 }, uDelta: { value: 0 }, uMorph: { value: 1 }, uNoise: { value: params.noise }, uNoiseScale: { value: params.noiseScale },
-  uSpring: { value: params.spring }, uFwTime: { value: 0 }, uTilt: { value: 1.22 }, uFwHide: { value: INTRO ? 1 : 0 },
+  uSpring: { value: params.spring }, uFwTime: { value: 0 }, uTilt: { value: 1.22 }, uFwHide: { value: INTRO && INTRO !== 'full' ? 1 : 0 },
   uMouseStr: { value: params.mouseStr }, uMouseRad: { value: params.mouseRad }, uMouseOn: { value: 0 }, uMouseSign: { value: 1 },
   uBurst: { value: 0 }, uMouse: { value: new THREE.Vector3(99, 99, 99) }, uCamDir: { value: new THREE.Vector3(0, 0, -1) },
   uBurstC: { value: new THREE.Vector3() }, uSpin: { value: SPIN },
@@ -610,7 +610,7 @@ const ALL_STAGES = [
   { name: '第四幕 · 烟花', kind: 2 },
   { name: '终幕 · 入场券', kind: 1, tex: TEX.ticket, ticket: true },
 ];
-const STAGES = INTRO === 'fw' ? ALL_STAGES.slice(3) : INTRO ? ALL_STAGES.slice(4) : ALL_STAGES;
+const STAGES = INTRO === 'fw' ? ALL_STAGES.slice(3) : INTRO && INTRO !== 'full' ? ALL_STAGES.slice(4) : ALL_STAGES;
 const dotsEl = document.getElementById('dots'), nameEl = document.getElementById('name');
 dotsEl.innerHTML = STAGES.map(() => '<span></span>').join('');
 let stageIdx = 0, morph = 0, morphDur = params.morphDur, fwStart = 0, time = 0;
@@ -634,8 +634,13 @@ function goTo(i) {
   morph = 0; morphDur = params.morphDur; oriVar.material.uniforms.uSnap.value = 1;
   if (next.kind === 2) { fwStart = time; morphDur = 0.5; U.uBurstC.value.set(0, -0.3, 0); U.uBurst.value = 0.6; }
   showStage();
+  autoNext();
 }
-setSide('Prev', STAGES[0]); setSide('Next', STAGES[0]); showStage();
+// ?intro=full：茶杯、帐篷、欢迎语、烟花各放一会儿自动往下走；到了入场券就停，等观众点
+const AUTO_MS = [3000, 4200, 4500, 7000];
+let autoT = 0;
+function autoNext() { clearTimeout(autoT); if (INTRO !== 'full') return; const d = AUTO_MS[stageIdx]; if (d) autoT = setTimeout(() => goTo(stageIdx + 1), d); }
+setSide('Prev', STAGES[0]); setSide('Next', STAGES[0]); showStage(); autoNext();
 if (STAGES[0].kind === 2) {   // 烟花开场：第一轮直接在半空依次炸开（不显示字），之后从地面升空；7 秒后（或点一下）收成入场券
   fwStart = -0.2;
   setTimeout(() => { if (stageIdx === 0) goTo(1); }, 7000);
