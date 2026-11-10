@@ -107,10 +107,13 @@ const INTRO = QS.get('intro');
 if (INTRO) document.documentElement.classList.add('intro');
 const UI = INTRO === 'full';
 if (UI) document.documentElement.classList.add('full');
-const ART = UI && QS.get('ui') === 'art', TALL = innerHeight > innerWidth;   // ?ui=art（11-07 小样）：提示用粒子拼在茶杯下，按住时粒子被搅成漩涡
+// ?ui=art（线上）：提示用粒子拼在茶杯下，按住时粒子被搅成漩涡。对比小样（11-07）：curtain 按住粒子从中缝分开；bulbs 粒子聚成跑马灯环；drop 第一次没有字，一滴茶落进杯心
+const MODE = UI && ['art', 'curtain', 'bulbs', 'drop'].includes(QS.get('ui')) ? QS.get('ui') : '';
+const ART = !!MODE, TALL = innerHeight > innerWidth;
 if (ART) document.documentElement.classList.add('art');
 // 第一次来只提示“轻点继续”，希望完整看一遍；按住照样有效但不写。看过的人（或地址带 &seen）才写“按住跳过”
-let SEEN = QS.has('seen'); try { if (localStorage.getItem('hc-intro-seen')) SEEN = true; } catch (e) {}
+let SEEN = QS.has('seen'); try { if (!QS.has('fresh') && localStorage.getItem('hc-intro-seen')) SEEN = true; } catch (e) {}
+const TXT = ART && (MODE !== 'drop' || SEEN);   // 茶滴版第一次来不写字
 if (EMBED) document.documentElement.classList.add('embed');
 // 告诉外层网页：hc-intro-ready 第一帧画出来了；hc-intro-fail 跑不起来或太卡，外层退回普通幕布；hc-intro-done 票塞进去了
 const tell = type => { if (EMBED && parent !== window) parent.postMessage({ type }, '*'); };
@@ -204,7 +207,7 @@ function sampleShape(draw, depth = 0.9, seg = 0) {
 }
 
 // 第一幕：催眠红茶头像的螺旋茶杯（也是开场的“螺旋星系”）。螺线白、茶汤红茶色、杯身奶白、热气淡
-const CUP_S = !ART ? 7.8 : TALL ? 6.5 : 6.9, CUP_DY = !ART ? 15.5 : TALL ? 5.5 : 8;   // 提示分两行放杯子下面，茶杯缩小上移腾位置
+const CUP_S = !TXT ? 7.8 : TALL ? 6.5 : 6.9, CUP_DY = !TXT ? 15.5 : TALL ? 5.5 : 8;   // 提示分两行放杯子下面，茶杯缩小上移腾位置
 const teacup = sampleShape(ctx => {
   ctx.scale(CUP_S, CUP_S); ctx.translate(0, CUP_DY);
   ctx.save(); ctx.translate(0, -7); ctx.fillStyle = col(0.62);
@@ -222,7 +225,7 @@ const teacup = sampleShape(ctx => {
   ctx.stroke(new Path2D('M-30-4C-30 18-17 30 0 30C17 30 30 18 30-4'));
   ctx.stroke(new Path2D('M29 4C42 0 45 15 27 19'));
   ctx.lineWidth = 1.9; ctx.stroke(new Path2D('M-17 35Q0 39 17 35'));
-  if (ART) {   // 提示是茶杯这张图的一部分：和杯子一起拼出来，点一下和杯子一起散掉
+  if (TXT) {   // 提示是茶杯这张图的一部分：和杯子一起拼出来，点一下和杯子一起散掉
     ctx.setTransform(1, 0, 0, 1, CW / 2, CH / 2); ctx.fillStyle = col(0.9); ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.font = `600 ${TALL ? 58 : 46}px "Songti SC", "STSong", serif`; ctx.letterSpacing = TALL ? '10px' : '9px';
     const y0 = TALL ? 330 : 366, dy = TALL ? 72 : 56;
@@ -404,8 +407,8 @@ vec3 hash31(float p){ vec3 p3=fract(vec3(p)*vec3(.1031,.1030,.0973)); p3+=dot(p3
 
 const velShader = /* glsl */`
 uniform float uTime, uDelta, uMorph, uNoise, uNoiseScale, uSpring, uFwTime, uTilt, uFwHide;
-uniform float uMouseStr, uMouseRad, uMouseOn, uMouseSign, uBurst, uHold, uPulseR, uPulseA;
-uniform vec3 uMouse, uCamDir, uBurstC, uHoldC, uPulseC;
+uniform float uMouseStr, uMouseRad, uMouseOn, uMouseSign, uBurst, uHold, uPulseR, uPulseA, uHoldKind, uHoldP, uBulbR, uDrop;
+uniform vec3 uMouse, uCamDir, uBurstC, uHoldC, uPulseC, uDropP;
 uniform vec4 uSpin;
 uniform int uPrevKind, uNextKind;
 uniform float uPrevWave, uNextWave;
@@ -519,14 +522,32 @@ void main(){
     desired += normalize(pd + 1e-4) * pulseB * 0.16;
   }
   // 按住：粒子被搅进以手指为心的漩涡（茶杯里那个螺旋）；越近转得越快，松手弹回原形
+  float bulbB = -1.0;
   if (uHold > 0.001) {
-    vec2 hd = desired.xy - uHoldC.xy;
-    float hr = length(hd), h2 = uHold * uHold;
-    float ang = h2 * (1.8 + 6.0 / (0.7 + hr)), cs = cos(ang), sn = sin(ang);
-    float pull = 1.0 - h2 * (0.72 + 0.2 * seed);
-    desired.xy = uHoldC.xy + mat2(cs, -sn, sn, cs) * hd * pull;
-    desired.z *= pull;
+    float h2 = uHold * uHold;
+    if (uHoldKind < 0.5) {
+      vec2 hd = desired.xy - uHoldC.xy;
+      float hr = length(hd);
+      float ang = h2 * (1.8 + 6.0 / (0.7 + hr)), cs = cos(ang), sn = sin(ang);
+      float pull = 1.0 - h2 * (0.72 + 0.2 * seed);
+      desired.xy = uHoldC.xy + mat2(cs, -sn, sn, cs) * hd * pull;
+      desired.z *= pull;
+    } else if (uHoldKind < 1.5) {
+      // 拉幕：以画面中缝为界往两边分开，边走边起褶
+      float side = desired.x >= 0.0 ? 1.0 : -1.0;
+      desired.x += side * (h2 * (11.0 + 0.25 * seed) + uHold * 0.1 * sin(desired.y * 2.2));   // 两半整块滑开，粒子错得太多会拖成横条
+    } else if (seed < 0.05) {
+      // 跑马灯：5% 的粒子飞到手指周围，聚成 24 颗灯泡，按进度一颗颗亮
+      float k = floor(seed / 0.05 * 24.0), a = (k + 0.5) / 24.0 * 6.2831853;
+      vec3 j = hash31(seed * 317.3) - 0.5;
+      vec2 bp = uHoldC.xy + vec2(sin(a), cos(a)) * uBulbR + j.xy * 0.13;
+      float go = smoothstep(0.0, 0.3, uHold);
+      desired.xy = mix(desired.xy, bp, go); desired.z *= 1.0 - go;
+      bulbB = (k + 0.5) / 24.0 < uHoldP ? 2.4 : 0.28;
+    }
   }
+  // 茶滴：1% 的粒子聚成一滴，落进杯心
+  if (uDrop > 0.5 && seed < 0.012) { desired = uDropP + (hash31(seed * 211.7) - 0.5) * vec3(0.09, 0.2, 0.05); bulbB = 2.2; }
   // 稳定的阻尼弹簧跟着 desired 走
   vec3 acc = (desired - pos) * 85.0;
   vec3 bd = pos - uBurstC;
@@ -534,7 +555,9 @@ void main(){
   vel += acc * uDelta;
   vel *= exp(-12.5 * uDelta);
   float sp = length(vel); if (sp > 60.0) vel *= 60.0 / sp;
-  float b = clamp(mix(bA, bB, blend) * (1.0 + 0.15 * lens + 1.5 * pulseB) * (1.0 - 0.45 * uHold), 0.0, 2.5);
+  float dim = uHoldKind > 0.5 && uHoldKind < 1.5 ? 0.0 : uHoldKind > 1.5 ? 0.7 : 0.45;
+  float b = clamp(mix(bA, bB, blend) * (1.0 + 0.15 * lens + 1.5 * pulseB) * (1.0 - dim * uHold), 0.0, 2.5);
+  if (bulbB >= 0.0) b = mix(b, bulbB, uDrop > 0.5 ? 1.0 : smoothstep(0.1, 0.3, uHold));
   float tone = clamp(t < 0.5 ? A.w : B.w, 0.0, 1.0);
   gl_FragColor = vec4(vel, floor(b / 2.5 * 31.0 + 0.5) * 2.0 + tone * 0.98);
 }`;
@@ -578,6 +601,7 @@ Object.assign(U, {
   uMouseStr: { value: params.mouseStr }, uMouseRad: { value: params.mouseRad }, uMouseOn: { value: 0 }, uMouseSign: { value: 1 },
   uBurst: { value: 0 }, uMouse: { value: new THREE.Vector3(99, 99, 99) }, uCamDir: { value: new THREE.Vector3(0, 0, -1) },
   uBurstC: { value: new THREE.Vector3() }, uSpin: { value: SPIN },
+  uHoldKind: { value: { curtain: 1, bulbs: 2 }[MODE] || 0 }, uHoldP: { value: 0 }, uBulbR: { value: TALL ? 2.3 : 1.15 }, uDrop: { value: 0 }, uDropP: { value: new THREE.Vector3() },
   uHold: { value: 0 }, uHoldC: { value: new THREE.Vector3() }, uPulseR: { value: 0 }, uPulseA: { value: 0 }, uPulseC: { value: new THREE.Vector3() },
   uPrevKind: { value: 0 }, uNextKind: { value: 0 }, uPrevWave: { value: 0 }, uNextWave: { value: 0 },
   uPrevTex: { value: TEX.hello }, uNextTex: { value: TEX.hello },
@@ -748,6 +772,15 @@ function resetTicket() {
 function skipIntro() {
   if (!tkImg || inserting) return;
   if (!ART || STAGES[stageIdx].ticket) { insertTicket(); return; }
+  if (MODE === 'curtain') {   // 幕已经拉开了，不再收票，直接进站
+    inserting = true;
+    try { localStorage.setItem('hc-intro-seen', '1'); } catch (e) {}
+    renderer.domElement.style.opacity = 0; slotEl.style.opacity = 0;
+    if (EMBED) document.documentElement.classList.add('see-through');
+    setTimeout(() => tell('hc-intro-done'), 150);
+    if (!(EMBED && parent !== window)) setTimeout(resetTicket, 1800);
+    return;
+  }
   goTo(STAGES.length - 1); morphDur = 0.8; pendingInsert = true;   // ?ui=art：漩涡直接收成入场券，再递进幕布
 }
 let holdStart = 0, holdP = 0, holdCentered = false, pulseT = 0;
@@ -922,7 +955,22 @@ function frame(now) {
         holdP = Math.min(1, Math.max(holdP, (performance.now() - holdStart - 120) / 980));
         if (holdP >= 1) { holdStart = 0; down = null; skipIntro(); }
       } else holdP *= Math.exp(-dt * 7);
-      U.uHold.value = holdP * holdP * (3 - 2 * holdP);
+      U.uHold.value = holdP * holdP * (3 - 2 * holdP); U.uHoldP.value = holdP;
+      if (MODE === 'curtain') {   // 拉幕时中缝透出光
+        if (holdP > 0.02) Object.assign(slotEl.style, { display: 'block', left: (innerWidth / 2 - 1) + 'px', top: '2vh', height: '96vh', opacity: Math.min(1, holdP * 1.6) });
+        else if (!inserting) slotEl.style.display = 'none';
+      }
+      if (MODE === 'drop') {   // 第一幕：一滴茶落下（0.6 秒），落进杯心再泛开
+        const drop = show && stageIdx === 0, fall = pc < 0.6;
+        U.uDrop.value = drop && fall ? 1 : 0;
+        if (drop) {
+          const k = pc / 0.6, top = SPIN.y + 5.2;
+          U.uDropP.value.set(0, top + (SPIN.y - top) * k * k, 0);
+          U.uPulseC.value.set(0, SPIN.y, 0);
+          const pp = pc - 0.6;
+          U.uPulseR.value = pp * 2.6; U.uPulseA.value = !fall && pp < 1.6 ? Math.sin(Math.PI * pp / 1.6) : 0;
+        }
+      }
     }
   }
 
